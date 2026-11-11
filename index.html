@@ -29,6 +29,8 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
 .modes button{border:1px solid var(--line);background:transparent;color:var(--sub);padding:5px 8px;font-size:12px}
 .modes button.on{color:var(--accent);border-color:var(--accent);font-weight:700}
 .count{margin-left:auto;font-size:13px;color:var(--sub);white-space:nowrap}
+.count a{color:var(--sub);text-decoration:none}
+.today{padding:2px 12px 0;font-size:12px;color:var(--sub);min-height:16px}
 .done{display:none;margin:6px 12px 10px;padding:8px 10px;border-radius:6px;background:var(--chip);font-size:13px}
 .done.show{display:block}
 </style>
@@ -37,48 +39,93 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
 <div class="bar">
   <div><div class="clock" id="clock">25:00</div><div class="lab" id="lab">集中</div></div>
   <button class="go" id="go">▶ 開始</button>
-  <button class="ghost" id="reset" title="戻す">↺</button>
+  <button class="ghost" id="stop" title="やめて、ここまでの分を記録する">■ 終える</button>
   <select id="field" aria-label="分野"></select>
   <div class="modes" id="modes">
     <button data-m="focus">25分</button><button data-m="short">5分</button><button data-m="long">15分</button>
   </div>
-  <div class="count">今日 🍅×<b id="cnt">0</b> <a href="https://soichiro71.github.io/pomodoro/" target="_blank" rel="noopener" title="別の窓で開く（音を確実に鳴らす）" style="color:var(--sub);text-decoration:none">↗</a></div>
+  <div class="count">今日 <b id="mins">0</b>分 <a href="https://soichiro71.github.io/pomodoro/" target="_blank" rel="noopener" title="別の窓で開く（音を確実に鳴らす）">↗</a></div>
 </div>
 <div class="prog"><i id="prog"></i></div>
+<div class="today" id="today"></div>
 <div class="done" id="done"></div>
 
 <script>
 (function(){
+  // Notionへ書き込む中継ぎ（Google Apps Script）のURL。空なら記録はこの端末の中だけ
+  var RELAY = "";
   var FIELDS=["就活","簿記","雑学ショート","大学","その他"];
   var MODES={focus:{min:25,lab:"集中",c:"var(--focus)"},short:{min:5,lab:"休憩",c:"var(--rest)"},long:{min:15,lab:"長い休憩",c:"var(--rest)"}};
-  var TEST = location.hash==="#test";
+  var TEST = location.hash==="#test";           // お試し：25分→10秒、1秒＝1分として数える
+  var UNIT = TEST ? 1000 : 60000;
   var KEY = TEST ? "pomo_state_test" : "pomo_state";
+  var LOGKEY = TEST ? "pomo_log_test" : "pomo_log";
   var $=function(id){return document.getElementById(id)};
-  // 状態：ページを切り替えても続くよう、毎回ブラウザに保存する（終わる時刻で数えるので、閉じていても進む）
-  var S={mode:"focus",total:TEST?10:1500,left:TEST?10:1500,running:false,endAt:0,msg:""};
-  var timer=null,audio=null,count=0;
+  // 状態はブラウザに保存（ページを移っても続く）。acc＝この集中で一時停止までに進んだミリ秒
+  var S={mode:"focus",total:TEST?10:1500,left:TEST?10:1500,running:false,endAt:0,segStart:0,acc:0,msg:""};
+  var timer=null,audio=null;
   function store(k,v){try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null}}
+  function getJSON(k,d){try{return JSON.parse(store(k)||"null")||d}catch(e){return d}}
   function save(){store(KEY,JSON.stringify(S))}
   function today(){return new Date(Date.now()+9*3600e3).toISOString().slice(0,10)}
   function fmt(s){s=Math.max(0,Math.round(s));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}
-  function loadCount(){var d=store("pomo_day"); count=(d===today())?Number(store("pomo_cnt")||0):0; $("cnt").textContent=count}
-  function addCount(){loadCount(); count++; store("pomo_day",today()); store("pomo_cnt",String(count)); $("cnt").textContent=count}
   function lenOf(m){return TEST?10:MODES[m].min*60}
+  function remaining(){return S.running?(S.endAt-Date.now())/1000:S.left}
+
+  // ---- 今日の分数（分野ごと・この端末） ----
+  function todayLog(){var L=getJSON(LOGKEY,{}); return L.day===today()?L:{day:today(),by:{}}}
+  function renderToday(){
+    var L=todayLog(), sum=0, parts=[];
+    FIELDS.forEach(function(f){var m=L.by[f]||0; if(m){sum+=m; parts.push(f+" "+m+"分")}});
+    $("mins").textContent=sum;
+    var pend=getJSON("pomo_pending",[]).length;
+    $("today").textContent=parts.join("・")+(pend&&RELAY?"　（Notionへ送信待ち "+pend+"件）":"");
+  }
+  // ---- Notionへ記録（中継ぎ経由。送れなかった分は次に開いたとき再送） ----
+  var sending=false;
+  function flush(){
+    if(!RELAY||sending) return;
+    var q=getJSON("pomo_pending",[]); if(!q.length) return;
+    var item=q[0]; sending=true;
+    fetch(RELAY,{method:"POST",mode:"no-cors",headers:{"Content-Type":"text/plain;charset=utf-8"},body:JSON.stringify(item)})
+      .then(function(){ sending=false; var q2=getJSON("pomo_pending",[]).filter(function(x){return x.id!==item.id}); store("pomo_pending",JSON.stringify(q2)); renderToday(); flush(); })
+      .catch(function(){ sending=false; renderToday(); });
+  }
+  function record(field,minutes,how){
+    if(minutes<1) return;
+    var L=todayLog(); L.by[field]=(L.by[field]||0)+minutes; store(LOGKEY,JSON.stringify(L));
+    if(RELAY && !TEST){
+      var q=getJSON("pomo_pending",[]);
+      q.push({id:Date.now()+"-"+Math.random().toString(36).slice(2,7),field:field,minutes:minutes,how:how});
+      store("pomo_pending",JSON.stringify(q));
+    }
+    renderToday(); flush();
+  }
+  // 集中を締めて、ここまでの分を記録する（途中でやめても数える）
+  function closeFocus(how){
+    if(S.mode!=="focus") return 0;
+    var ms=S.acc+(S.running&&S.segStart?Math.min(Date.now(),S.endAt)-S.segStart:0);
+    var m=Math.round(ms/UNIT);
+    S.acc=0; S.segStart=0;
+    if(m>=1) record($("field").value,m,how);
+    return m;
+  }
+
+  // ---- タイマー ----
   function setMode(m,keepMsg){
-    S.mode=m; S.total=lenOf(m); S.left=S.total; S.running=false; S.endAt=0;
+    S.mode=m; S.total=lenOf(m); S.left=S.total; S.running=false; S.endAt=0; S.segStart=0; S.acc=0;
     if(!keepMsg) S.msg="";
     save(); render();
   }
-  function remaining(){return S.running?(S.endAt-Date.now())/1000:S.left}
   function render(){
     var m=MODES[S.mode];
     document.documentElement.style.setProperty("--accent",m.c);
-    $("lab").textContent=m.lab+(S.running?"（進行中）":"");
+    $("lab").textContent=m.lab+(S.running?"（進行中）":(S.left<S.total?"（一時停止）":""));
     Array.prototype.forEach.call($("modes").children,function(b){b.classList.toggle("on",b.dataset.m===S.mode)});
     var l=remaining();
     $("clock").textContent=fmt(l);
     $("prog").style.width=(100*(1-l/S.total))+"%";
-    $("go").textContent=S.running?"⏸ 停止":"▶ 開始";
+    $("go").textContent=S.running?"⏸ 一時停止":(S.left<S.total?"▶ 再開":"▶ 開始");
     document.title=(S.running?fmt(l)+" ":"")+"ポモドーロ";
     $("done").textContent=S.msg; $("done").classList.toggle("show",!!S.msg);
   }
@@ -90,9 +137,21 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
     },250);
   }
   function start(){
-    if(S.running){ S.left=Math.max(0,remaining()); S.running=false; S.endAt=0; save(); render(); return; }
+    if(S.running){ // 一時停止（記録はまだ。「終える」か時間切れで記録）
+      var now=Date.now(); S.left=Math.max(0,(S.endAt-now)/1000);
+      if(S.mode==="focus"){ S.acc+=now-S.segStart; S.segStart=0; }
+      S.running=false; S.endAt=0; save(); render(); return;
+    }
     try{audio=audio||new (window.AudioContext||window.webkitAudioContext)(); if(audio.resume) audio.resume();}catch(e){}
-    S.msg=""; S.running=true; S.endAt=Date.now()+S.left*1000; save(); render();
+    S.msg=""; S.running=true; S.endAt=Date.now()+S.left*1000;
+    if(S.mode==="focus") S.segStart=Date.now();
+    save(); render();
+  }
+  function stopAndRecord(){
+    var f=$("field").value;
+    var m=closeFocus("途中まで");
+    S.msg = m>=1 ? ("✍️ "+f+" "+m+"分を記録しました") : (S.mode==="focus"?"1分未満なので記録していません":"");
+    setMode("focus",true);
   }
   function beep(){
     try{var c=audio; if(!c) return;
@@ -103,34 +162,40 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
     }catch(e){}
   }
   function finish(live){
-    // 別のタブ・埋め込みが先に終わらせていたら二重に数えない
-    var cur=null; try{cur=JSON.parse(store(KEY)||"null")}catch(e){}
-    if(cur && (!cur.running || cur.endAt!==S.endAt)){ S=cur; render(); return; }
+    var cur=getJSON(KEY,null);
+    if(cur && (!cur.running || cur.endAt!==S.endAt)){ S=cur; render(); renderToday(); return; } // 別の画面が先に終えた
     if(live) beep();
     if(S.mode==="focus"){
-      addCount();
       var f=$("field").value;
-      S.msg="🍅 おつかれさま！ 下の「🍅 今日の記録」の「"+f+"」で ＋ を押して記録";
-      setMode(count%4===0?"long":"short",true);
+      var m=closeFocus("25分");
+      var n=Number(store("pomo_done_"+today())||0)+1; store("pomo_done_"+today(),String(n));
+      S.msg="🍅 おつかれさま！ "+f+" "+m+"分を記録しました。休憩しましょう";
+      setMode(n%4===0?"long":"short",true);
     } else { S.msg="休憩おわり。次の25分へ"; setMode("focus",true); }
   }
-  // 他の画面（別タブ・別の埋め込み）で操作したら合わせる
   window.addEventListener("storage",function(e){
     if(e.key===KEY){ try{S=JSON.parse(e.newValue)||S}catch(_){} render(); }
-    if(e.key==="pomo_cnt"||e.key==="pomo_day") loadCount();
+    if(e.key===LOGKEY||e.key==="pomo_pending") renderToday();
   });
+  window.addEventListener("online",flush);
+
   FIELDS.forEach(function(f){var o=document.createElement("option");o.value=o.textContent=f;$("field").appendChild(o)});
   var saved=store("pomo_field"); if(saved && FIELDS.indexOf(saved)>=0) $("field").value=saved;
   $("field").addEventListener("change",function(e){store("pomo_field",e.target.value)});
   $("go").addEventListener("click",start);
-  $("reset").addEventListener("click",function(){S.left=S.total;S.running=false;S.endAt=0;S.msg="";save();render()});
-  Array.prototype.forEach.call($("modes").children,function(b){b.addEventListener("click",function(){setMode(b.dataset.m)})});
-  // 前の状態を読み込む（ページを移っていた間に終わっていたら、ここで数える）
-  try{ var prev=JSON.parse(store(KEY)||"null"); if(prev && MODES[prev.mode]) S=prev; }catch(e){}
+  $("stop").addEventListener("click",stopAndRecord);
+  Array.prototype.forEach.call($("modes").children,function(b){b.addEventListener("click",function(){
+    if(b.dataset.m===S.mode) return;
+    var f=$("field").value, m=closeFocus("途中まで");
+    if(m>=1) S.msg="✍️ "+f+" "+m+"分を記録しました";
+    setMode(b.dataset.m,m>=1);
+  })});
+
+  var prev=getJSON(KEY,null); if(prev && MODES[prev.mode]) { for(var k in prev) S[k]=prev[k]; }
   if(!S.total) S.total=lenOf(S.mode);
-  loadCount();
+  if(S.acc===undefined) S.acc=0;
   if(S.running && S.endAt-Date.now()<=0) finish(false); else render();
-  loop();
+  renderToday(); flush(); loop();
 })();
 </script>
 </body>
