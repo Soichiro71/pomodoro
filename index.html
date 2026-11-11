@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ポモドーロ</title>
+<style>
+:root{
+  --bg:#ffffff; --ink:#37352f; --sub:#787774; --line:#e9e9e7; --chip:#f1f1ef;
+  --focus:#e03e3e; --rest:#0f7b6c;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#191919; --ink:#e6e6e4; --sub:#9b9a97; --line:#2f2f2f; --chip:#252525;
+         --focus:#ff7369; --rest:#4dab9a; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);
+  font-family:-apple-system,"Hiragino Sans","Noto Sans JP",system-ui,sans-serif}
+.bar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 12px}
+.clock{font-size:30px;font-weight:700;font-variant-numeric:tabular-nums;color:var(--accent);min-width:96px;line-height:1}
+.lab{font-size:11px;color:var(--sub);margin-top:3px}
+.prog{height:3px;background:var(--line);border-radius:2px;margin:0 12px;overflow:hidden}
+.prog i{display:block;height:100%;width:0;background:var(--accent);transition:width .25s linear}
+button,select{font:inherit;font-size:13px;border-radius:6px;cursor:pointer}
+.go{border:none;background:var(--accent);color:#fff;font-weight:700;padding:8px 16px}
+.ghost{border:1px solid var(--line);background:transparent;color:var(--ink);padding:7px 10px}
+select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padding:7px 8px}
+.modes{display:flex;gap:4px}
+.modes button{border:1px solid var(--line);background:transparent;color:var(--sub);padding:5px 8px;font-size:12px}
+.modes button.on{color:var(--accent);border-color:var(--accent);font-weight:700}
+.count{margin-left:auto;font-size:13px;color:var(--sub);white-space:nowrap}
+.done{display:none;margin:6px 12px 10px;padding:8px 10px;border-radius:6px;background:var(--chip);font-size:13px}
+.done.show{display:block}
+</style>
+</head>
+<body>
+<div class="bar">
+  <div><div class="clock" id="clock">25:00</div><div class="lab" id="lab">集中</div></div>
+  <button class="go" id="go">▶ 開始</button>
+  <button class="ghost" id="reset" title="戻す">↺</button>
+  <select id="field" aria-label="分野"></select>
+  <div class="modes" id="modes">
+    <button data-m="focus">25分</button><button data-m="short">5分</button><button data-m="long">15分</button>
+  </div>
+  <div class="count">今日 🍅×<b id="cnt">0</b></div>
+</div>
+<div class="prog"><i id="prog"></i></div>
+<div class="done" id="done"></div>
+
+<script>
+(function(){
+  var FIELDS=["就活","簿記","雑学ショート","大学","その他"];
+  var MODES={focus:{min:25,lab:"集中",c:"var(--focus)"},short:{min:5,lab:"休憩",c:"var(--rest)"},long:{min:15,lab:"長い休憩",c:"var(--rest)"}};
+  var TEST = location.hash==="#test";
+  var $=function(id){return document.getElementById(id)};
+  var mode="focus",total=1500,left=1500,timer=null,endAt=0,audio=null,count=0;
+  function store(k,v){try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null}}
+  function today(){return new Date(Date.now()+9*3600e3).toISOString().slice(0,10)}
+  function fmt(s){s=Math.max(0,Math.round(s));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}
+  function loadCount(){var d=store("pomo_day"); count = (d===today()) ? Number(store("pomo_cnt")||0) : 0; $("cnt").textContent=count}
+  function addCount(){count++; store("pomo_day",today()); store("pomo_cnt",String(count)); $("cnt").textContent=count}
+  function setMode(m){
+    mode=m; total=TEST?10:MODES[m].min*60; left=total; stop();
+    document.documentElement.style.setProperty("--accent",MODES[m].c);
+    $("lab").textContent=MODES[m].lab;
+    Array.prototype.forEach.call($("modes").children,function(b){b.classList.toggle("on",b.dataset.m===m)});
+    draw();
+  }
+  function draw(){
+    $("clock").textContent=fmt(left);
+    $("prog").style.width=(100*(1-left/total))+"%";
+    $("go").textContent=timer?"⏸ 停止":"▶ 開始";
+    document.title=(timer?fmt(left)+" ":"")+"ポモドーロ";
+  }
+  function tick(){left=(endAt-Date.now())/1000; if(left<=0){left=0;draw();finish();return} draw()}
+  function start(){
+    if(timer){stop();return}
+    try{audio=audio||new (window.AudioContext||window.webkitAudioContext)(); if(audio.resume) audio.resume();}catch(e){}
+    $("done").classList.remove("show");
+    endAt=Date.now()+left*1000; timer=setInterval(tick,250); draw();
+  }
+  function stop(){if(timer){clearInterval(timer);timer=null} draw()}
+  function beep(){
+    try{var c=audio; if(!c) return;
+      [0,.35,.7].forEach(function(t){var o=c.createOscillator(),g=c.createGain();
+        o.frequency.value=880;o.connect(g);g.connect(c.destination);
+        g.gain.setValueAtTime(.0001,c.currentTime+t);g.gain.exponentialRampToValueAtTime(.3,c.currentTime+t+.02);
+        g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+t+.3);o.start(c.currentTime+t);o.stop(c.currentTime+t+.32)});
+    }catch(e){}
+  }
+  function finish(){
+    stop(); beep();
+    if(mode==="focus"){
+      addCount();
+      var f=$("field").value;
+      $("done").textContent="🍅 おつかれさま！ 下の「🍅 今日の記録」の「"+f+"」で ＋ を押して記録";
+      $("done").classList.add("show");
+      setMode(count%4===0?"long":"short");
+    } else setMode("focus");
+  }
+  FIELDS.forEach(function(f){var o=document.createElement("option");o.value=o.textContent=f;$("field").appendChild(o)});
+  var saved=store("pomo_field"); if(saved && FIELDS.indexOf(saved)>=0) $("field").value=saved;
+  $("field").addEventListener("change",function(e){store("pomo_field",e.target.value)});
+  $("go").addEventListener("click",start);
+  $("reset").addEventListener("click",function(){left=total;stop()});
+  Array.prototype.forEach.call($("modes").children,function(b){b.addEventListener("click",function(){setMode(b.dataset.m)})});
+  loadCount(); setMode("focus");
+})();
+</script>
+</body>
+</html>
