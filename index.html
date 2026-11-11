@@ -42,7 +42,7 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
   <div class="modes" id="modes">
     <button data-m="focus">25分</button><button data-m="short">5分</button><button data-m="long">15分</button>
   </div>
-  <div class="count">今日 🍅×<b id="cnt">0</b></div>
+  <div class="count">今日 🍅×<b id="cnt">0</b> <a href="https://soichiro71.github.io/pomodoro/" target="_blank" rel="noopener" title="別の窓で開く（音を確実に鳴らす）" style="color:var(--sub);text-decoration:none">↗</a></div>
 </div>
 <div class="prog"><i id="prog"></i></div>
 <div class="done" id="done"></div>
@@ -52,34 +52,48 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
   var FIELDS=["就活","簿記","雑学ショート","大学","その他"];
   var MODES={focus:{min:25,lab:"集中",c:"var(--focus)"},short:{min:5,lab:"休憩",c:"var(--rest)"},long:{min:15,lab:"長い休憩",c:"var(--rest)"}};
   var TEST = location.hash==="#test";
+  var KEY = TEST ? "pomo_state_test" : "pomo_state";
   var $=function(id){return document.getElementById(id)};
-  var mode="focus",total=1500,left=1500,timer=null,endAt=0,audio=null,count=0;
+  // 状態：ページを切り替えても続くよう、毎回ブラウザに保存する（終わる時刻で数えるので、閉じていても進む）
+  var S={mode:"focus",total:1500,left:1500,running:false,endAt:0,msg:""};
+  var timer=null,audio=null,count=0;
   function store(k,v){try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null}}
+  function save(){store(KEY,JSON.stringify(S))}
   function today(){return new Date(Date.now()+9*3600e3).toISOString().slice(0,10)}
   function fmt(s){s=Math.max(0,Math.round(s));return String(Math.floor(s/60)).padStart(2,"0")+":"+String(s%60).padStart(2,"0")}
-  function loadCount(){var d=store("pomo_day"); count = (d===today()) ? Number(store("pomo_cnt")||0) : 0; $("cnt").textContent=count}
-  function addCount(){count++; store("pomo_day",today()); store("pomo_cnt",String(count)); $("cnt").textContent=count}
-  function setMode(m){
-    mode=m; total=TEST?10:MODES[m].min*60; left=total; stop();
-    document.documentElement.style.setProperty("--accent",MODES[m].c);
-    $("lab").textContent=MODES[m].lab;
-    Array.prototype.forEach.call($("modes").children,function(b){b.classList.toggle("on",b.dataset.m===m)});
-    draw();
+  function loadCount(){var d=store("pomo_day"); count=(d===today())?Number(store("pomo_cnt")||0):0; $("cnt").textContent=count}
+  function addCount(){loadCount(); count++; store("pomo_day",today()); store("pomo_cnt",String(count)); $("cnt").textContent=count}
+  function lenOf(m){return TEST?10:MODES[m].min*60}
+  function setMode(m,keepMsg){
+    S.mode=m; S.total=lenOf(m); S.left=S.total; S.running=false; S.endAt=0;
+    if(!keepMsg) S.msg="";
+    save(); render();
   }
-  function draw(){
-    $("clock").textContent=fmt(left);
-    $("prog").style.width=(100*(1-left/total))+"%";
-    $("go").textContent=timer?"⏸ 停止":"▶ 開始";
-    document.title=(timer?fmt(left)+" ":"")+"ポモドーロ";
+  function remaining(){return S.running?(S.endAt-Date.now())/1000:S.left}
+  function render(){
+    var m=MODES[S.mode];
+    document.documentElement.style.setProperty("--accent",m.c);
+    $("lab").textContent=m.lab+(S.running?"（進行中）":"");
+    Array.prototype.forEach.call($("modes").children,function(b){b.classList.toggle("on",b.dataset.m===S.mode)});
+    var l=remaining();
+    $("clock").textContent=fmt(l);
+    $("prog").style.width=(100*(1-l/S.total))+"%";
+    $("go").textContent=S.running?"⏸ 停止":"▶ 開始";
+    document.title=(S.running?fmt(l)+" ":"")+"ポモドーロ";
+    $("done").textContent=S.msg; $("done").classList.toggle("show",!!S.msg);
   }
-  function tick(){left=(endAt-Date.now())/1000; if(left<=0){left=0;draw();finish();return} draw()}
+  function loop(){
+    if(timer) clearInterval(timer);
+    timer=setInterval(function(){
+      if(S.running && S.endAt-Date.now()<=0){ finish(true); return; }
+      render();
+    },250);
+  }
   function start(){
-    if(timer){stop();return}
+    if(S.running){ S.left=Math.max(0,remaining()); S.running=false; S.endAt=0; save(); render(); return; }
     try{audio=audio||new (window.AudioContext||window.webkitAudioContext)(); if(audio.resume) audio.resume();}catch(e){}
-    $("done").classList.remove("show");
-    endAt=Date.now()+left*1000; timer=setInterval(tick,250); draw();
+    S.msg=""; S.running=true; S.endAt=Date.now()+S.left*1000; save(); render();
   }
-  function stop(){if(timer){clearInterval(timer);timer=null} draw()}
   function beep(){
     try{var c=audio; if(!c) return;
       [0,.35,.7].forEach(function(t){var o=c.createOscillator(),g=c.createGain();
@@ -88,23 +102,35 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
         g.gain.exponentialRampToValueAtTime(.0001,c.currentTime+t+.3);o.start(c.currentTime+t);o.stop(c.currentTime+t+.32)});
     }catch(e){}
   }
-  function finish(){
-    stop(); beep();
-    if(mode==="focus"){
+  function finish(live){
+    // 別のタブ・埋め込みが先に終わらせていたら二重に数えない
+    var cur=null; try{cur=JSON.parse(store(KEY)||"null")}catch(e){}
+    if(cur && (!cur.running || cur.endAt!==S.endAt)){ S=cur; render(); return; }
+    if(live) beep();
+    if(S.mode==="focus"){
       addCount();
       var f=$("field").value;
-      $("done").textContent="🍅 おつかれさま！ 下の「🍅 今日の記録」の「"+f+"」で ＋ を押して記録";
-      $("done").classList.add("show");
-      setMode(count%4===0?"long":"short");
-    } else setMode("focus");
+      S.msg="🍅 おつかれさま！ 下の「🍅 今日の記録」の「"+f+"」で ＋ を押して記録";
+      setMode(count%4===0?"long":"short",true);
+    } else { S.msg="休憩おわり。次の25分へ"; setMode("focus",true); }
   }
+  // 他の画面（別タブ・別の埋め込み）で操作したら合わせる
+  window.addEventListener("storage",function(e){
+    if(e.key===KEY){ try{S=JSON.parse(e.newValue)||S}catch(_){} render(); }
+    if(e.key==="pomo_cnt"||e.key==="pomo_day") loadCount();
+  });
   FIELDS.forEach(function(f){var o=document.createElement("option");o.value=o.textContent=f;$("field").appendChild(o)});
   var saved=store("pomo_field"); if(saved && FIELDS.indexOf(saved)>=0) $("field").value=saved;
   $("field").addEventListener("change",function(e){store("pomo_field",e.target.value)});
   $("go").addEventListener("click",start);
-  $("reset").addEventListener("click",function(){left=total;stop()});
+  $("reset").addEventListener("click",function(){S.left=S.total;S.running=false;S.endAt=0;S.msg="";save();render()});
   Array.prototype.forEach.call($("modes").children,function(b){b.addEventListener("click",function(){setMode(b.dataset.m)})});
-  loadCount(); setMode("focus");
+  // 前の状態を読み込む（ページを移っていた間に終わっていたら、ここで数える）
+  try{ var prev=JSON.parse(store(KEY)||"null"); if(prev && MODES[prev.mode]) S=prev; }catch(e){}
+  if(!S.total) S.total=lenOf(S.mode);
+  loadCount();
+  if(S.running && S.endAt-Date.now()<=0) finish(false); else render();
+  loop();
 })();
 </script>
 </body>
