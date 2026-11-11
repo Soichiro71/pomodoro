@@ -53,7 +53,7 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
 <script>
 (function(){
   // Notionへ書き込む中継ぎ（Google Apps Script）のURL。空なら記録はこの端末の中だけ
-  var RELAY = "";
+  var RELAY = "https://script.google.com/macros/s/AKfycbwrnTWfTt1kdratqgmdtvwWRs87cgSnL4K-Xe1s3lQZQdUz8xZn6BsbTGIxzCEzMPz3IA/exec";
   var FIELDS=["就活","簿記","雑学ショート","大学","その他"];
   var MODES={focus:{min:25,lab:"集中",c:"var(--focus)"},short:{min:5,lab:"休憩",c:"var(--rest)"},long:{min:15,lab:"長い休憩",c:"var(--rest)"}};
   var TEST = location.hash==="#test";           // お試し：25分→10秒、1秒＝1分として数える
