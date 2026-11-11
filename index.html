@@ -55,7 +55,7 @@ select{border:1px solid var(--line);background:var(--chip);color:var(--ink);padd
   var KEY = TEST ? "pomo_state_test" : "pomo_state";
   var $=function(id){return document.getElementById(id)};
   // 状態：ページを切り替えても続くよう、毎回ブラウザに保存する（終わる時刻で数えるので、閉じていても進む）
-  var S={mode:"focus",total:1500,left:1500,running:false,endAt:0,msg:""};
+  var S={mode:"focus",total:TEST?10:1500,left:TEST?10:1500,running:false,endAt:0,msg:""};
   var timer=null,audio=null,count=0;
   function store(k,v){try{ if(v===undefined) return localStorage.getItem(k); localStorage.setItem(k,v);}catch(e){return null}}
   function save(){store(KEY,JSON.stringify(S))}
